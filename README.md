@@ -9,11 +9,7 @@ is an advanced script for Adobe InDesign designed to automate the entire book cr
 ➡️ [Download latest release](https://github.com/lab-Spectral/BookCreator/releases/latest)
 
 
-### Editions
 
-BookCreator is available in two editions:
-- Community Edition (CE) released under the AGPL license, free to use and modify.
-- Enterprise Edition (EE) includes additional features and official support. A commercial license is required.
 
 ### Licensing
 See the [LICENSE](LICENSE) file for details on licensing.
