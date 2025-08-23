@@ -9,15 +9,15 @@ is an advanced script for Adobe InDesign designed to automate the entire book cr
 ➡️ [Download latest release](https://github.com/lab-Spectral/BookCreator/releases/latest)
 
 
-## Editions
+### Editions
 
 Preparo is available in two editions:
 - BookCreator Community Edition (CE) released under the AGPL license, free to use and modify.
 - BookCreator Enterprise Edition (EE) includes additional features and official support. A commercial license is required.
 
-## Licensing
+### Licensing
 See the [LICENSE](LICENSE) file for details on licensing.
 
-## Contributing
+### Contributing
 BookCreator is an open source project and we welcome community contributions.
 Please refer to the [Contributing Guide](CONTRIBUTING.md) for more details.
