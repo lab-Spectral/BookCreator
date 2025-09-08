@@ -4,7 +4,7 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GitHub release](https://img.shields.io/github/v/release/lab-Spectral/BookCreator?include_prereleases&sort=semver)](https://github.com/lab-Spectral/BookCreator/releases/latest)
 
-is an advanced script for Adobe InDesign designed to automate the entire book creation process using templates. It can automatically import Markdown text into your generated book along with variables for the title page, headers, and credits.
+BookCreator is an advanced script for Adobe InDesign designed to automate the entire book creation process using templates. It can automatically import Markdown text into your generated book along with variables for the title page, headers, and credits.
 
 ➡️ [Download latest release](https://github.com/lab-Spectral/BookCreator/releases/latest)
 
