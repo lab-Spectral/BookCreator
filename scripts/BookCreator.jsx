@@ -6,7 +6,7 @@
   * from templates. It can automatically import Markdown 
   * text and inject it into your generated book, along with variables.
   * 
-  * @version 1.0 beta 3
+  * @version 1.0 beta 4
   * @license AGPL
   * @author entremonde / Spectral lab
   * @website http://lab.spectral.art
@@ -59,6 +59,90 @@ var BookCreator = (function() {
      */
     function isArray(obj) {
         return Object.prototype.toString.call(obj) === '[object Array]';
+    }
+    
+    /**
+     * Normalizes a book title for use as filename prefix
+     * @param {string} title - Book title to normalize
+     * @return {string} Normalized prefix (first 1-3 words, max 8 chars, uppercase)
+     */
+    function normalizeBookTitle(title) {
+        if (!title) return "";
+        
+        var words = title.split(' ');
+        var result = "";
+        
+        // Take first 1-3 words
+        for (var i = 0; i < Math.min(3, words.length); i++) {
+            var word = words[i];
+            // Remove ALL types of punctuation including all apostrophes
+            var cleanWord = word.replace(/[?!.,;:\-_\(\)\[\]{}\u0027\u2019\u2018\u201B]/g, '');
+            
+            // Check if adding this word would exceed 8 characters
+            var testResult = result + cleanWord;
+            if (testResult.length <= 8) {
+                result = testResult;
+            } else {
+                break;
+            }
+        }
+        
+        return result.toUpperCase();
+    }
+    
+    /**
+     * Progress bar window for long operations
+     * @constructor
+     * @param {string} title - Window title
+     * @param {number} maxValue - Maximum value for progress
+     */
+    function ProgressBar(title, maxValue) {
+        // Utiliser "palette" pour une fenêtre non-bloquante qui reste au premier plan
+        this.window = new Window("palette", title || "Processing...");
+        this.window.maximized = false;
+        this.window.minimized = false;
+        this.window.orientation = "column";
+        this.window.alignChildren = "fill";
+        this.window.preferredSize.width = 400;
+        
+        // Status text
+        this.statusText = this.window.add("statictext", undefined, "Starting...");
+        
+        this.cancelled = false;
+        
+        this.show = function() {
+            this.window.show();
+        };
+        
+        this.close = function() {
+            this.window.close();
+        };
+        
+        this.update = function(value, status, details) {
+            if (status) this.statusText.text = status;
+            
+            // Force le rafraîchissement multiple
+            this.window.update();
+            
+            // Ramener au premier plan
+            this.bringToFront();
+            
+            // Petite pause pour permettre le rafraîchissement
+            app.doScript(function(){}, ScriptLanguage.JAVASCRIPT, [], UndoModes.FAST_ENTIRE_SCRIPT);
+        };
+        
+        this.isCancelled = function() {
+            return this.cancelled;
+        };
+        
+        this.bringToFront = function() {
+            try {
+                this.window.active = true;
+                this.window.show();
+            } catch(e) {
+                // Ignore errors
+            }
+        };
     }
     
     /**
@@ -174,11 +258,15 @@ var BookCreator = (function() {
             this.currentIndent = 0;
             this.inMultiline = false;
             this.multilineValue = "";
+            this.literalBlock = false;
             this.inList = false;
             this.currentList = [];
             this.inObject = false;
             this.currentObject = {};
             this.lineIndex = 0;
+            this.inComplexList = false;
+            this.currentComplexItem = null;
+            this.complexItemIndent = 0; 
             
             /**
              * Gets the current line being processed
@@ -250,6 +338,33 @@ var BookCreator = (function() {
                 var item = line.replace(/^\s*- /, "");
                 return utils.convertValue(utils.trim(item));
             };
+            
+            /**
+             * Checks if a line starts a complex object (has key: value after list item)
+             * @param {string} line - Line to check
+             * @return {boolean} True if line starts a complex object
+             */
+            this.isComplexListItem = function(line) {
+                // Check if it's a list item followed by a key:value on the same line
+                var match = line.match(/^\s*-\s+([^:]+):\s*(.*?)$/);
+                return match !== null;
+            };
+            
+            /**
+             * Extracts key-value from a complex list item
+             * @param {string} line - Line containing complex list item
+             * @return {Object} Object with key and value
+             */
+            this.extractComplexListItem = function(line) {
+                var match = line.match(/^\s*-\s+([^:]+):\s*(.*?)$/);
+                if (match) {
+                    return {
+                        key: utils.trim(match[1]),
+                        value: utils.trim(match[2])
+                    };
+                }
+                return null;
+            };
         }
         
         /**
@@ -275,16 +390,70 @@ var BookCreator = (function() {
                 // Handle lists
                 if (ctx.inList) {
                     if (ctx.isListItem(line)) {
-                        // Add item to current list
-                        ctx.currentList.push(ctx.extractListItem(line));
+                        var trimmedLine = line.replace(/^\s*-\s*/, "");
+                        
+                        // Check if it's a complex item (has key: value)
+                        if (trimmedLine.match(/^[^:]+:\s*.+$/)) {
+                            // Complex list item
+                            var complexPair = ctx.getKeyValuePair(trimmedLine);
+                            if (complexPair) {
+                                var complexObj = {};
+                                complexObj[complexPair.key] = utils.convertValue(complexPair.value);
+                                
+                                // Look ahead for more properties of this object
+                                var nextIndex = ctx.lineIndex + 1;
+                                while (nextIndex < ctx.lines.length) {
+                                    var nextLine = ctx.lines[nextIndex];
+                                    var nextIndent = ctx.getLineIndent(nextLine);
+                                    
+                                    if (!ctx.isListItem(nextLine) && nextIndent > lineIndent) {
+                                        var nextPair = ctx.getKeyValuePair(nextLine);
+                                        if (nextPair) {
+                                            complexObj[nextPair.key] = utils.convertValue(nextPair.value);
+                                        }
+                                        nextIndex++;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                
+                                ctx.currentList.push(complexObj);
+                                ctx.lineIndex = nextIndex - 1;
+                                line = ctx.getNextLine();
+                                continue;
+                            }
+                        } else {
+                            // Simple list item
+                            ctx.currentList.push(utils.convertValue(trimmedLine));
+                        }
+                        
                         line = ctx.getNextLine();
                         continue;
-                    } else if (lineIndent < ctx.currentIndent || lineIndent === 0) {
+                    } else if (lineIndent <= ctx.currentIndent) {
                         // End of list
                         ctx.result[ctx.currentKey] = ctx.currentList;
                         ctx.inList = false;
                         ctx.currentList = [];
                         ctx.currentKey = null;
+                        // Don't advance, process current line
+                    }
+                }
+                
+                // Handle complex list items (objects within lists)
+                if (ctx.inComplexList) {
+                    if (lineIndent > ctx.complexItemIndent) {
+                        // Still within the complex item
+                        var itemPair = ctx.getKeyValuePair(line);
+                        if (itemPair) {
+                            ctx.currentComplexItem[itemPair.key] = utils.convertValue(itemPair.value);
+                        }
+                        line = ctx.getNextLine();
+                        continue;
+                    } else {
+                        // End of complex item
+                        ctx.currentList.push(ctx.currentComplexItem);
+                        ctx.inComplexList = false;
+                        ctx.currentComplexItem = null;
                         // Don't advance to next line, process current line
                     }
                 }
@@ -313,13 +482,21 @@ var BookCreator = (function() {
                 if (ctx.inMultiline) {
                     if (line.match(/^\s{2,}/) && utils.trim(line) !== "") {
                         // Still in multiline value
-                        ctx.multilineValue += " " + utils.trim(line.replace(/^\s{2}/, ""));
+                        var lineContent = utils.trim(line.replace(/^\s{2,}/, ""));
+                        if (ctx.literalBlock) {
+                            // For literal blocks (|), preserve line breaks
+                            ctx.multilineValue += (ctx.multilineValue ? "\r" : "") + lineContent;
+                        } else {
+                            // For folded blocks (>), join with spaces
+                            ctx.multilineValue += (ctx.multilineValue ? " " : "") + lineContent;
+                        }
                         line = ctx.getNextLine();
                         continue;
                     } else {
                         // End of multiline value
                         ctx.result[ctx.currentKey] = ctx.multilineValue;
                         ctx.inMultiline = false;
+                        ctx.literalBlock = false;
                         ctx.currentKey = null;
                         ctx.multilineValue = "";
                         // Don't advance to next line
@@ -356,10 +533,11 @@ var BookCreator = (function() {
                     }
                     
                     // Check value types
-                    if (value === "") {
+                    if (value === "" || value === "|" || value === ">") {
                         // Multiline value starts on next line
                         ctx.inMultiline = true;
                         ctx.multilineValue = "";
+                        ctx.literalBlock = (value === "|"); // Track if it's a literal block
                     } else {
                         // Simple value
                         ctx.result[ctx.currentKey] = utils.convertValue(value);
@@ -377,6 +555,17 @@ var BookCreator = (function() {
             // Final processing of in-progress structures
             if (ctx.inMultiline && ctx.currentKey) {
                 ctx.result[ctx.currentKey] = ctx.multilineValue;
+                ctx.literalBlock = false;
+            }
+            
+            if (ctx.inComplexList && ctx.currentKey) {
+                // Finalize current complex item and add to list
+                if (ctx.currentComplexItem) {
+                    ctx.currentList.push(ctx.currentComplexItem);
+                }
+                ctx.result[ctx.currentKey] = ctx.currentList;
+                ctx.inComplexList = false;
+                ctx.currentComplexItem = null;
             }
             
             if (ctx.inList && ctx.currentKey) {
@@ -541,6 +730,127 @@ var BookCreator = (function() {
     })();
     
     /**
+     * @namespace PandocMapper
+     * @description Maps Pandoc YAML metadata to BookCreator format
+     */
+    var PandocMapper = (function() {
+        
+        /**
+         * Maps Pandoc metadata to BookCreator format
+         * @param {Object} pandocData - Parsed Pandoc YAML data
+         * @return {Object} BookCreator compatible metadata
+         */
+        function mapToBookCreator(pandocData) {
+            var result = {};
+            
+            // Handle title - can be array or string
+            if (pandocData.title) {
+                if (isArray(pandocData.title)) {
+                    // Complex title structure
+                    for (var i = 0; i < pandocData.title.length; i++) {
+                        var titleItem = pandocData.title[i];
+                        if (titleItem && typeof titleItem === "object") {
+                            if (titleItem.type === "main" && titleItem.text) {
+                                result.title = titleItem.text;
+                            } else if (titleItem.type === "subtitle" && titleItem.text) {
+                                result.subtitle = titleItem.text;
+                            }
+                        }
+                    }
+                } else {
+                    // Simple string title
+                    result.title = pandocData.title;
+                    // Ne PAS traiter subtitle ici si on a un title simple
+                }
+            }
+            
+            // Handle creator - can be array or string  
+            if (pandocData.creator) {
+                if (isArray(pandocData.creator)) {
+                    // Complex creator structure
+                    for (var j = 0; j < pandocData.creator.length; j++) {
+                        var creatorItem = pandocData.creator[j];
+                        if (creatorItem && typeof creatorItem === "object") {
+                            if (creatorItem.role === "author" && creatorItem.text) {
+                                result.author = creatorItem.text;
+                            }
+                        }
+                    }
+                } else {
+                    // Simple string creator
+                    result.author = pandocData.creator;
+                }
+            }
+            
+            // Handle identifier for ISBN
+            if (pandocData.identifier && isArray(pandocData.identifier)) {
+                for (var k = 0; k < pandocData.identifier.length; k++) {
+                    var identifierItem = pandocData.identifier[k];
+                    if (identifierItem && typeof identifierItem === "object") {
+                        if (identifierItem.scheme === "ISBN" && identifierItem.text) {
+                            if (!result.isbnEbook) {
+                                result.isbnEbook = identifierItem.text;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Direct field mappings
+            if (pandocData["isbn-print"]) result.isbnPrint = pandocData["isbn-print"];
+            if (pandocData["isbn-ebook"]) result.isbnEbook = pandocData["isbn-ebook"];
+            
+            if (pandocData["published-print"]) {
+                result.printDate = pandocData["published-print"];
+            } else if (pandocData.date) {
+                result.printDate = pandocData.date;
+            }
+            
+            if (pandocData["translator-display"]) {
+                result.translation = pandocData["translator-display"];
+            }
+            
+            if (pandocData["critical-display"]) {
+                result.critical = pandocData["critical-display"];
+            }
+            
+            if (pandocData["cover-note"]) {
+                result.coverCredit = pandocData["cover-note"];
+            }
+            
+            // Other field mappings
+            if (pandocData.editions) result.editions = pandocData.editions;
+            if (pandocData.funding) result.funding = pandocData.funding;
+            if (pandocData.rights) result.rights = pandocData.rights;
+            if (pandocData.price) result.price = pandocData.price;
+            if (pandocData.publisher) result.publisher = pandocData.publisher;
+            if (pandocData.lang) result.language = pandocData.lang;
+            if (pandocData["original-title"]) result.originalTitle = pandocData["original-title"];
+            
+            // SUPPRIMEZ ou CORRIGEZ ces lignes problématiques :
+            // Ne les exécutez QUE si les champs n'ont pas déjà été définis
+            // ET si les champs simples existent vraiment dans pandocData
+            
+            // Pour subtitle : seulement si pas déjà défini ET si le champ existe vraiment
+            if (!result.subtitle && pandocData.subtitle && pandocData.subtitle !== undefined) {
+                result.subtitle = pandocData.subtitle;
+            }
+            
+            // Pour author : seulement si pas déjà défini ET si le champ existe vraiment  
+            if (!result.author && pandocData.author && pandocData.author !== undefined) {
+                result.author = pandocData.author;
+            }
+            
+            return result;
+        }
+        
+        // Public API
+        return {
+            mapToBookCreator: mapToBookCreator
+        };
+    })();
+    
+    /**
      * @namespace I18n
      * @description Internationalization module for UI translations
      */
@@ -580,7 +890,7 @@ var BookCreator = (function() {
                 'originalTitle': 'Original Title:',
                 'prefix': 'Prefix',
                 'printDate': 'Print Date:',
-                'criticalApparatus': 'Critical Apparatus:',
+                'critical': 'Critical Apparatus:',
                 'translation': 'Translation:',
                 'coverCredit': 'Cover Credit:',
                 'editions': 'Editions:',
@@ -595,7 +905,7 @@ var BookCreator = (function() {
                 'noYAMLLoaded': 'No YAML file loaded',
                 
                 // Success and error messages
-                'bookGenerated': 'Book successfully generated!\n\nYou can now open it in InDesign.',
+                'bookGenerated': 'Book successfully generated!',
                 'yamlImportCompleted': 'YAML import completed.',
                 'yamlExportCompleted': 'YAML export completed.',
                 'fileExists': 'File %s already exists. Do you want to replace it?',
@@ -648,7 +958,7 @@ var BookCreator = (function() {
                 'originalTitle': 'Titre original :',
                 'prefix': 'Pr\u00E9fixe',
                 'printDate': 'Date d\'impression :',
-                'criticalApparatus': 'Appareil critique :',
+                'critical': 'Appareil critique :',
                 'translation': 'Traduction :',
                 'coverCredit': 'Cr\u00E9dit couverture :',
                 'editions': '\u00C9ditions :',
@@ -663,7 +973,7 @@ var BookCreator = (function() {
                 'noYAMLLoaded': 'Aucun fichier YAML charg\u00E9',
                 
                 // Success and error messages
-                'bookGenerated': 'Livre g\u00E9n\u00E9r\u00E9 avec succ\u00E8s !\n\nVous pouvez maintenant l\'ouvrir dans InDesign.',
+                'bookGenerated': 'Livre g\u00E9n\u00E9r\u00E9 avec succ\u00E8s !',
                 'yamlImportCompleted': 'Import YAML termin\u00E9.',
                 'yamlExportCompleted': 'Export YAML termin\u00E9.',
                 'fileExists': 'Le fichier %s existe d\u00E9j\u00E0. Voulez-vous le remplacer ?',
@@ -673,8 +983,8 @@ var BookCreator = (function() {
                 'error': 'Erreur',
                 
                 // Default prefixes
-                'originalTitlePrefix': 'Titre original : ',
-                'coverCreditPrefix': 'Couverture : ',
+                'originalTitlePrefix': 'Titre original\u2009: ',
+                'coverCreditPrefix': 'Couverture\u2009: ',
                 
                 // Validation
                 'bookNameRequired': 'Le nom du livre est requis.',
@@ -800,13 +1110,13 @@ var BookCreator = (function() {
     
     /**
      * @namespace TextUtils
-     * @description Text formatting utilities (simplified without Markdown formatting)
+     * @description Text formatting utilities with simple markdown formatting
      */
     var TextUtils = {
         /**
-         * Applies plain text to a text frame without Markdown formatting
+         * Applies formatted text to a text frame with basic markdown formatting
          * @param {TextFrame} textFrame - InDesign text frame to apply text to
-         * @param {string} text - Raw text content
+         * @param {string} text - Raw text content with markdown
          * @param {Document} doc - Parent InDesign document
          */
         applyFormattedText: function(textFrame, text, doc) {
@@ -815,12 +1125,48 @@ var BookCreator = (function() {
                 return;
             }
             
-            // Process only <br> tags and trailing spaces
+            // Process basic replacements
             var processedText = text.replace(/<br\s*\/?>/gi, "\n");
             processedText = processedText.replace(/[ ]{2,}$/mg, "\n");
             
-            // Apply text without additional formatting
+            // Apply text to frame
             textFrame.contents = processedText;
+            
+            // Apply markdown formatting if italic style exists
+            this.formatItalicMarkdown(textFrame, doc);
+        },
+        
+        /**
+         * Formats text between ** markers as italic if italic character style exists
+         * @param {TextFrame} textFrame - Target text frame
+         * @param {Document} doc - InDesign document
+         */
+        formatItalicMarkdown: function(textFrame, doc) {
+            try {
+                // Check if italic character style exists
+                var italicStyle = doc.characterStyles.itemByName("Italic");
+                if (!italicStyle.isValid) {
+                    // No italic style found, leave text as-is with * markers
+                    return;
+                }
+                
+                // Clear find/change preferences
+                app.findGrepPreferences = app.changeGrepPreferences = null;
+                
+                // Find text between * markers and replace directly with GREP
+                app.findGrepPreferences.findWhat = "\\*(.+?)\\*";
+                app.changeGrepPreferences.changeTo = "$1"; // $1 = premier groupe capturé (sans les *)
+                app.changeGrepPreferences.appliedCharacterStyle = italicStyle;
+                
+                // Apply changes only in this text frame
+                textFrame.changeGrep();
+                
+                // Clear preferences
+                app.findGrepPreferences = app.changeGrepPreferences = null;
+                
+            } catch (e) {
+                $.writeln("Warning: Error applying italic formatting: " + e.message);
+            }
         }
     };
     
@@ -938,10 +1284,13 @@ var BookCreator = (function() {
         this.info = info || {};
         this.templates = {
             before: [],
-            chapter: null,
+            frontmatter: null,
+            bodymatter: null,
+            backmatter: null,
             after: [],
             cover: null
         };
+        this.templateFolder = null;
         this.chapterCount = 0;
         
         // Display options (checked by default)
@@ -969,12 +1318,27 @@ var BookCreator = (function() {
                 return { valid: false, message: I18n.__('bookNameRequired') };
             }
             
-            if (!this.chapterCount || isNaN(parseInt(this.chapterCount)) || parseInt(this.chapterCount) <= 0) {
-                return { valid: false, message: I18n.__('chapterCountPositive') };
+            // Validation basée sur l'auto-découverte des fichiers Markdown
+            if (this.markdownOptions.injectMarkdown && this.markdownOptions.yamlPath) {
+                var autoDiscoveredFiles = this._getAllMarkdownFilesFromFolder();
+                if (autoDiscoveredFiles.length === 0) {
+                    return { valid: false, message: "No Markdown files found in text folder." };
+                }
+                // Auto-définir le nombre de chapitres basé sur les fichiers MD découverts
+                this.chapterCount = autoDiscoveredFiles.length;
+            } else {
+                // Mode manuel si pas de Markdown
+                if (!this.chapterCount || isNaN(parseInt(this.chapterCount)) || parseInt(this.chapterCount) <= 0) {
+                    return { valid: false, message: I18n.__('chapterCountPositive') };
+                }
             }
             
-            if (!this.templates.chapter) {
-                return { valid: false, message: I18n.__('chapterTemplateRequired') };
+            if (!this.templateFolder) {
+                return { valid: false, message: "A templates folder is required." };
+            }
+            
+            if (!this.templates.bodymatter) {
+                return { valid: false, message: "No Bodymatter template found in folder." };
             }
             
             // Validate ISBNs if present
@@ -1000,7 +1364,7 @@ var BookCreator = (function() {
          * @param {Folder} folder - Destination folder
          * @return {Book|boolean} InDesign book object or false if generation failed
          */
-        this.generate = function(folder) {
+        this.generate = function(folder, mainWindow) {
             if (!folder || !folder.exists) {
                 throw new Error(I18n.__('destinationFolderNotExist'));
             }
@@ -1010,22 +1374,59 @@ var BookCreator = (function() {
                 throw new Error(result.message);
             }
             
+            // Calculate total steps based on discovered templates and MD files
+            var allMdFiles = this._getAllMarkdownFilesFromFolder();
+            var totalSteps = this.templates.before.length + 
+                             allMdFiles.length + 
+                             this.templates.after.length + 
+                             (this.templates.cover ? 1 : 0) + 
+                             2;
+            
             try {
-                // Create the InDesign book file
+                // Fermer la fenêtre principale avant la génération
+                if (mainWindow) {
+                    mainWindow.close();
+                }
+                
+                // Créer la barre de progression APRÈS avoir fermé la fenêtre
+                var progress = new ProgressBar(
+                    I18n.getLanguage() === 'fr' ? "G\u00E9n\u00E9ration du livre..." : "Generating book...",
+                    totalSteps
+                );
+                
+                var currentStep = 0;
+                
+                // Créer le fichier InDesign book
+                progress.update(currentStep++, 
+                    I18n.getLanguage() === 'fr' ? "Cr\u00E9ation du fichier livre..." : "Creating book file...");
+                
                 var bookFileName = this.name.toUpperCase() + '-' + I18n.__('bookSuffix') + '.indb';
                 var bookFile = new File(folder.fsName + '/' + bookFileName);
                 
-                // Check if file already exists
                 if (bookFile.exists) {
+                    progress.close(); // Fermer temporairement pour le dialogue
                     var overwrite = confirm(I18n.__('fileExists', bookFileName));
-                    if (!overwrite) return false;
+                    if (!overwrite) {
+                        return false;
+                    }
+                    progress.show(); // Réafficher après le dialogue
                 }
                 
+                progress.show(); // Montrer la barre maintenant
+                
                 var book = app.books.add(bookFile);
+                // Petite pause pour s'assurer que le livre est bien initialisé
+                app.doScript(function(){}, ScriptLanguage.JAVASCRIPT, [], UndoModes.FAST_ENTIRE_SCRIPT);
                 var prefix = this.name.toUpperCase() + '-';
                 
                 // Generate documents before chapters
                 for (var i = 0; i < this.templates.before.length; i++) {
+                    progress.update(
+                        currentStep++, 
+                        I18n.getLanguage() === 'fr' ? "Traitement des modèles avant chapitres..." : "Processing templates before chapters...",
+                        this.templates.before[i].name
+                    );
+                    
                     this._generateDocument(
                         folder, 
                         this.templates.before[i], 
@@ -1035,42 +1436,104 @@ var BookCreator = (function() {
                     );
                 }
                 
-                // Generate chapters
-                for (var c = 1; c <= parseInt(this.chapterCount); c++) {
+                // Generate all documents based on Markdown files and appropriate templates
+                var allMdFiles = this._getAllMarkdownFilesFromFolder();
+                var currentStep = this.templates.before.length; // Ajuster le compteur
+                
+                // Generate documents before chapters
+                for (var b = 0; b < this.templates.before.length; b++) {
+                    progress.update(
+                        currentStep++, 
+                        I18n.getLanguage() === 'fr' ? "Traitement des templates avant..." : "Processing before templates...",
+                        this.templates.before[b].name
+                    );
+                    
                     this._generateDocument(
-                        folder,
-                        this.templates.chapter,
-                        this.templates.chapter.name.replace(/^.*?-/, prefix).replace('.indd', '_' + c + '.indd'),
-                        true,
+                        folder, 
+                        this.templates.before[b], 
+                        this.templates.before[b].name.replace(/^.*?-/, prefix), 
+                        true, 
                         book
                     );
+                }
+                
+                // Generate all Markdown-based documents
+                for (var m = 0; m < allMdFiles.length; m++) {
+                    var currentMdFile = allMdFiles[m];
+                    var descriptiveName = currentMdFile.replace(/^\d+-/, "").replace(/\.md$/, "");
+                    var templateType = this._determineTemplateType(currentMdFile);
+                    
+                    // Select appropriate template with priority matching
+                    var selectedTemplate = this._selectBestTemplate(currentMdFile, templateType);
+                    
+                    if (selectedTemplate) {
+                        progress.update(
+                            currentStep++, 
+                            I18n.getLanguage() === 'fr' ? 
+                                "Cr\u00E9ation de " + descriptiveName + " (" + (m + 1) + " sur " + allMdFiles.length + ")..." :
+                                "Creating " + descriptiveName + " (" + (m + 1) + " of " + allMdFiles.length + ")...",
+                            descriptiveName + ".indd"
+                        );
+                        
+                        var newName = selectedTemplate.name.replace(/^.*?-/, prefix).replace('.indd', '-' + descriptiveName + '.indd');
+                        
+                        this._generateDocument(
+                            folder,
+                            selectedTemplate,
+                            newName,
+                            true,
+                            book,
+                            m  // Index pour le matching MD
+                        );
+                    }
                 }
                 
                 // Generate documents after chapters
-                for (var j = 0; j < this.templates.after.length; j++) {
+                for (var a = 0; a < this.templates.after.length; a++) {
+                    progress.update(
+                        currentStep++, 
+                        I18n.getLanguage() === 'fr' ? "Traitement des templates apr\u00E8s..." : "Processing after templates...",
+                        this.templates.after[a].name
+                    );
+                    
                     this._generateDocument(
                         folder,
-                        this.templates.after[j],
-                        this.templates.after[j].name.replace(/^.*?-/, prefix),
+                        this.templates.after[a],
+                        this.templates.after[a].name.replace(/^.*?-/, prefix),
                         true,
                         book
                     );
                 }
                 
-                // Generate cover
+                // Generate cover (separate from book)
                 if (this.templates.cover) {
+                    progress.update(
+                        currentStep++, 
+                        I18n.getLanguage() === 'fr' ? "Cr\u00E9ation de la couverture..." : "Creating cover...",
+                        "Cover.indd"
+                    );
+                    
                     this._generateDocument(
                         folder,
                         this.templates.cover,
-                        prefix + 'COVER.indd',
-                        false,
+                        prefix + 'Cover.indd',
+                        false,  // Important : false pour ne pas l'inclure dans le livre
                         book
                     );
                 }
                 
+                // Save book
+                progress.update(currentStep++, 
+                    I18n.getLanguage() === 'fr' ? "Sauvegarde du livre..." : "Saving book...");
                 book.save();
+                
+                progress.close();
                 return book;
+                
             } catch (e) {
+                if (typeof progress !== 'undefined') {
+                    progress.close();
+                }
                 LogManager.logError("Error generating book", e);
                 return false;
             }
@@ -1086,51 +1549,101 @@ var BookCreator = (function() {
          * @return {boolean} Success status
          * @private
          */
-        this._generateDocument = function(folder, template, newName, includeInBook, book) {
+        this._generateDocument = function(folder, template, newName, includeInBook, book, chapterIndex) {
             var destFile = new File(folder.fsName + '/' + newName);
+            var doc = null;
             
             try {
-                template.copy(destFile.fsName);
-                var doc = app.open(destFile, false);
+                // Copy template
+                if (!template.copy(destFile.fsName)) {
+                    throw new Error("Failed to copy template file");
+                }
+                
+                // Open document
+                doc = app.open(destFile, false);
                 
                 // Add custom variables
                 for (var key in this.info) {
                     if (this.info.hasOwnProperty(key)) {
-                        BookUtils.Document.addCustomVariable(doc, key, this.info[key]);
+                        try {
+                            BookUtils.Document.addCustomVariable(doc, key, this.info[key]);
+                        } catch (e) {
+                            // Continue if variable creation fails
+                            $.writeln("Warning: Could not add variable " + key + ": " + e.message);
+                        }
                     }
                 }
                 
                 // Replace text placeholders
-                BookUtils.Document.replaceTextPlaceholders(doc, this.info, this.displayOptions);
+                try {
+                    BookUtils.Document.replaceTextPlaceholders(doc, this.info, this.displayOptions);
+                } catch (e) {
+                    $.writeln("Warning: Error replacing text placeholders: " + e.message);
+                }
                 
                 // Replace EAN13 placeholders
-                BookUtils.Document.replaceEAN13Placeholders(doc, this.info.isbnPrint, this.info.isbnEbook);
+                try {
+                    BookUtils.Document.replaceEAN13Placeholders(doc, this.info.isbnPrint, this.info.isbnEbook);
+                } catch (e) {
+                    $.writeln("Warning: Error replacing EAN13 placeholders: " + e.message);
+                }
                 
+                // Inject Markdown if needed
                 if (this.markdownOptions.injectMarkdown && this.markdownOptions.hasInputFiles) {
                     try {
-                        // 1. First inject Markdown
-                        this._injectMarkdownContent(doc);
+                        this._injectMarkdownContent(doc, chapterIndex);
                         
-                        // 2. Process overflow without UI manipulation
                         if (doc.isValid) {
                             PageOverflow.processOverflow(doc);
                         }
                     } catch (e) {
-                        LogManager.logError("Error processing document", e);
+                        $.writeln("Warning: Error processing Markdown content: " + e.message);
                     }
                 }
                 
-                // Save and close
+                // Save document
                 doc.save(destFile);
                 doc.close();
+                doc = null; // Clear reference
                 
-                // Add to book if needed
+                // Add to book if needed - with retry mechanism
                 if (includeInBook && book) {
-                    book.bookContents.add(destFile);
+                    var maxRetries = 3;
+                    var retryCount = 0;
+                    var addedToBook = false;
+                    
+                    while (retryCount < maxRetries && !addedToBook) {
+                        try {
+                            // Small delay before adding to book
+                            app.doScript(function(){}, ScriptLanguage.JAVASCRIPT, [], UndoModes.FAST_ENTIRE_SCRIPT);
+                            
+                            book.bookContents.add(destFile);
+                            addedToBook = true;
+                        } catch (e) {
+                            retryCount++;
+                            $.writeln("Retry " + retryCount + " adding to book: " + e.message);
+                            
+                            if (retryCount >= maxRetries) {
+                                // Log final error but don't fail the generation
+                                $.writeln("Warning: Could not add " + newName + " to book after " + maxRetries + " attempts: " + e.message);
+                                break;
+                            }
+                        }
+                    }
                 }
                 
                 return true;
+                
             } catch (e) {
+                // Clean up document if still open
+                if (doc && doc.isValid) {
+                    try {
+                        doc.close(SaveOptions.NO);
+                    } catch (closeError) {
+                        // Ignore close errors
+                    }
+                }
+                
                 LogManager.logError("Error generating document " + newName, e);
                 return false;
             }
@@ -1142,7 +1655,7 @@ var BookCreator = (function() {
          * @return {boolean} Success status
          * @private
          */
-        this._injectMarkdownContent = function(doc) {
+        this._injectMarkdownContent = function(doc, chapterIndex) {
             try {
                 // Check parameters
                 if (!doc) {
@@ -1171,69 +1684,24 @@ var BookCreator = (function() {
         
                 function parseYaml(yamlString) {
                     if (!yamlString) return {};
-                    
-                    // Remove front matter delimiters if present
-                    yamlString = yamlString.replace(/^---\s*\n/, '').replace(/\n---\s*$/, '');
-                    
-                    var lines = yamlString.split(/\r\n|\r|\n/);
-                    var result = {};
-                    var currentKey = null;
-                    var inList = false;
-                    var currentList = [];
-                    
-                    for (var i = 0; i < lines.length; i++) {
-                        var line = lines[i];
-                        
-                        // Skip empty lines and comments
-                        if (localTrim(line) === "" || localTrim(line).charAt(0) === "#") {
-                            continue;
-                        }
-                        
-                        // Handle lists
-                        if (inList) {
-                            if (line.match(/^\s*- /)) {
-                                // New list item
-                                var listItem = line.replace(/^\s*- /, "");
-                                // Remove quotes if present
-                                if (listItem.charAt(0) === '"' && listItem.charAt(listItem.length - 1) === '"') {
-                                    listItem = listItem.substring(1, listItem.length - 1);
-                                }
-                                currentList.push(localTrim(listItem));
-                                continue;
-                            } else {
-                                // End of list
-                                result[currentKey] = currentList;
-                                inList = false;
-                                currentList = [];
-                                currentKey = null;
+                
+                    // Retire un éventuel front-matter délimité par --- ... ---
+                    // (gère \n et \r\n)
+                    var s = String(yamlString);
+                    var m = s.match(/^\s*---\s*\r?\n([\s\S]*?)\r?\n---\s*$/);
+                    var body = m ? m[1] : s;
+                
+                    try {
+                        return YAMLParser.parse(body);
+                    } catch (e) {
+                        // Sécurise en cas d’erreur de parsing pour ne pas bloquer l’exécution
+                        try {
+                            if (typeof LogManager !== "undefined" && LogManager.logError) {
+                                LogManager.logError("YAML parse error in _injectMarkdownContent: " + e);
                             }
-                        }
-                        
-                        // Normal processing
-                        var pair = line.match(/^([^:]+):\s*(.*?)$/);
-                        if (pair) {
-                            var key = localTrim(pair[1]);
-                            var value = localTrim(pair[2]);
-                            
-                            // Start of a list?
-                            if (value === "" && i+1 < lines.length && lines[i+1].match(/^\s*- /)) {
-                                currentKey = key;
-                                inList = true;
-                                currentList = [];
-                                continue;
-                            }
-                            
-                            // Normal value
-                            result[key] = value;
-                        }
+                        } catch (_e) {}
+                        return {};
                     }
-                    
-                    // Finalize any in-progress list
-                    if (inList && currentKey) {
-                        result[currentKey] = currentList;
-                    }
-                    
-                    return result;
                 }
         
                 // Read YAML file content
@@ -1242,16 +1710,26 @@ var BookCreator = (function() {
                 yamlFile.close();
         
                 var yamlData = parseYaml(yamlContent);
-                var inputFiles = yamlData["input-files"];
+                var inputFiles = this._getAllMarkdownFilesFromFolder();
                 
-                // Base directory of YAML file (config folder)
+                // Base directory of YAML file
                 var configDir = yamlFile.parent;
                 
-                // Determine project root directory (parent of config folder)
-                var projectDir = configDir.parent;
+                // Determine project root directory
+                var projectDir;
+                var configDirName = configDir.name.toLowerCase();
+                
+                // Check if YAML is in a subdirectory or at root
+                if (configDirName === "config" || configDirName === "configs" || configDirName === "metadata") {
+                    // YAML is in a config subdirectory, project is parent
+                    projectDir = configDir.parent;
+                } else {
+                    // YAML is likely at project root
+                    projectDir = configDir;
+                }
                 
                 // Define possible text folder names with different conventions
-                var textFolderVariants = ["text", "Text", "texte", "Texte", "textes", "Textes", "md", "MD", "markdown", "Markdown"];
+                var textFolderVariants = ["text", "Text", "texts", "Texts", "texte", "Texte", "textes", "Textes", "md", "MD", "markdown", "Markdown"];
                 
                 // Create an array to store all searchable text folders
                 var textFolders = [];
@@ -1265,13 +1743,26 @@ var BookCreator = (function() {
                 }
         
                 if (!inputFiles || inputFiles.length === 0) {
-                    // Return silently without error
+                    alert("No Markdown files found in text folder for auto-injection.");
                     return false;
                 }
         
                 // 2. Find matching Markdown file
                 var docName = doc.name;
-                var mdFileName = this._findMatchingMarkdownFile(docName, inputFiles);
+                // Utiliser l'index du chapitre pour le matching (si fourni)
+                var mdFileName;
+                if (typeof chapterIndex !== "undefined" && chapterIndex !== null) {
+                    mdFileName = this._findMatchingMarkdownFile(chapterIndex, inputFiles);
+                } else {
+                    // Fallback : essayer de déduire l'index depuis le nom du document
+                    var chapterMatch = doc.name.match(/_(\d+)\.indd$/);
+                    if (chapterMatch) {
+                        var deducedIndex = parseInt(chapterMatch[1], 10) - 1;
+                        mdFileName = this._findMatchingMarkdownFile(deducedIndex, inputFiles);
+                    } else {
+                        return false;
+                    }
+                }
                 if (!mdFileName) {
                     // Return silently without error
                     return false;
@@ -1341,8 +1832,10 @@ var BookCreator = (function() {
                 }
         
                 // 4. Inject content with preserved line breaks
+                // Remove epub:type attributes (with optional spaces) and convert line breaks
+                var cleanedContent = mdContent.replace(/\s*\{epub\s*:\s*type\s*=\s*[^}]+\}/gi, "");
                 // CRITICAL: Use \r instead of \n for InDesign line breaks
-                targetFrame.contents = mdContent.replace(/\n/g, "\r");
+                targetFrame.contents = cleanedContent.replace(/\n/g, "\r");
                 
                 // 5. Extract first H1 title and replace <<Document_Title>>
                 try {
@@ -1383,70 +1876,36 @@ var BookCreator = (function() {
         };
         
         /**
-         * Finds matching Markdown file based on document name
-         * @param {string} docName - InDesign document name
+         * Finds matching Markdown file based on chapter index (Pandoc approach)
+         * @param {number} chapterIndex - Index of current chapter (0-based)
          * @param {Array} mdFiles - List of Markdown filenames
          * @return {string|null} Matching Markdown filename or null
          * @private
          */
-        this._findMatchingMarkdownFile = function(docName, mdFiles) {
-            // Extract descriptive part of InDesign document name
-            var descriptivePart = docName.replace(/^.*?-\d+-\d+-/, "")
-                                      .replace(/\.indd$/, "")
-                                      .toLowerCase()
-                                      .replace(/[_-]/g, "");
+        this._findMatchingMarkdownFile = function(chapterIndex, mdFiles) {
+            if (!mdFiles || !isArray(mdFiles) || mdFiles.length === 0) {
+                return null;
+            }
             
-            var bestMatch = null;
-            var bestScore = 0;
-            
+            // Filtrer les fichiers MD valides
+            var validFiles = [];
             for (var i = 0; i < mdFiles.length; i++) {
-                var mdFile = mdFiles[i];
-                
-                // Extract descriptive part of Markdown file
-                var mdDescriptive = mdFile.replace(/^\d+-/, "")
-                                        .replace(/\.md$/, "")
-                                        .toLowerCase()
-                                        .replace(/[_-]/g, "");
-                
-                // Calculate match score
-                var score = 0;
-                
-                // Direct match between descriptive parts
-                if (descriptivePart === mdDescriptive) {
-                    score += 50;  // High score for exact match
-                }
-                // Partial match 
-                else if (descriptivePart.indexOf(mdDescriptive) !== -1 || 
-                         mdDescriptive.indexOf(descriptivePart) !== -1) {
-                    score += 30;
-                }
-                
-                // Check specific keywords
-              var keywords = ["chapter", "intro", "introduction", "conclusion", "appendix", "preface", "postface", "foreword", "index", "bibliography", "glossary", "acknowledgments", "afterword", "epilogue", "prologue", "chapitre", "annexe", "préface", "avant-propos", "bibliographie", "glossaire", "remerciements", "épilogue"];
-                
-                for (var k = 0; k < keywords.length; k++) {
-                    var keyword = keywords[k];
-                    if (descriptivePart.indexOf(keyword) !== -1 && mdDescriptive.indexOf(keyword) !== -1) {
-                        score += 20;
-                        
-                        // If both contain a number after keyword, check if it matches
-                        var docNumMatch = descriptivePart.match(new RegExp(keyword + "\\s*?(\\d+)", "i"));
-                        var mdNumMatch = mdDescriptive.match(new RegExp(keyword + "\\s*?(\\d+)", "i"));
-                        
-                        if (docNumMatch && mdNumMatch && docNumMatch[1] === mdNumMatch[1]) {
-                            score += 30;
-                        }
-                    }
-                }
-                
-                // Update if best score
-                if (score > bestScore) {
-                    bestMatch = mdFile;
-                    bestScore = score;
+                var file = mdFiles[i];
+                // Accepter les chaînes ET les nombres, convertir en chaîne  
+                if (file && (typeof file === "string" || typeof file === "number") && String(file) !== "") {
+                    validFiles.push(String(file));
                 }
             }
             
-            return bestScore > 0 ? bestMatch : null;
+            // Tri alphabétique (comme Pandoc)
+            validFiles.sort();
+            
+            // Retourner le fichier correspondant à l'index
+            if (chapterIndex >= 0 && chapterIndex < validFiles.length) {
+                return validFiles[chapterIndex];
+            }
+            
+            return null;
         };
         
         /**
@@ -1475,6 +1934,418 @@ var BookCreator = (function() {
             }
             
             return null;
+        };
+        
+        /**
+         * Auto-discovers all Markdown files in the text folder
+         * @return {Array} Sorted list of Markdown filenames
+         * @private
+         */
+        this._getAllMarkdownFilesFromFolder = function() {
+            if (!this.markdownOptions || !this.markdownOptions.yamlPath) {
+                return [];
+            }
+            
+            try {
+                var yamlFile = File(this.markdownOptions.yamlPath);
+                if (!yamlFile.exists) return [];
+                
+                var configDir = yamlFile.parent;
+                var projectDir;
+                var configDirName = configDir.name.toLowerCase();
+                
+                // Determine project root directory
+                if (configDirName === "config" || configDirName === "configs" || configDirName === "metadata") {
+                    projectDir = configDir.parent;
+                } else {
+                    projectDir = configDir;
+                }
+                
+                var textFolderVariants = ["text", "Text", "texts", "Texts", "texte", "Texte", "textes", "Textes", "md", "MD", "markdown", "Markdown"];
+                var allFiles = [];
+                
+                // Search in all possible text folder variants
+                for (var v = 0; v < textFolderVariants.length; v++) {
+                    var folderVariant = new Folder(projectDir.fsName + "/" + textFolderVariants[v]);
+                    if (folderVariant.exists) {
+                        var files = folderVariant.getFiles("*.md");
+                        for (var f = 0; f < files.length; f++) {
+                            if (files[f] instanceof File) {
+                                allFiles.push(files[f].name);
+                            }
+                        }
+                        break; // Use first text folder found
+                    }
+                }
+                
+                // If no specialized folder found, search in project root
+                if (allFiles.length === 0) {
+                    var rootFiles = projectDir.getFiles("*.md");
+                    for (var r = 0; r < rootFiles.length; r++) {
+                        if (rootFiles[r] instanceof File) {
+                            allFiles.push(rootFiles[r].name);
+                        }
+                    }
+                }
+                
+                // Sort alphabetically like Pandoc
+                allFiles.sort();
+                
+                return allFiles;
+                
+            } catch (e) {
+                return [];
+            }
+        };
+        
+        /**
+         * Classifies templates by alphabetical order relative to core templates
+         * @param {Folder} templateFolder - Template folder
+         * @return {Object} Classified templates
+         * @private
+         */
+        this._classifyTemplatesByOrder = function(templateFolder) {
+            var templates = {
+                before: [],
+                frontmatter: null,
+                bodymatter: null,
+                backmatter: null,
+                after: [],
+                cover: null,
+                specialized: [] // Nouveau: templates spécialisés
+            };
+            
+            if (!templateFolder || !templateFolder.exists) return templates;
+            
+            var files = templateFolder.getFiles("*.indd");
+            var sortedFiles = [];
+            
+            // Convert to array and sort alphabetically
+            for (var i = 0; i < files.length; i++) {
+                sortedFiles.push(files[i]);
+            }
+            sortedFiles.sort(function(a, b) {
+                return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
+            });
+            
+            var frontmatterFound = false;
+            var bodymatterFound = false;
+            var backmatterFound = false;
+            
+            for (var j = 0; j < sortedFiles.length; j++) {
+                var file = sortedFiles[j];
+                var filename = file.name.toLowerCase();
+                
+                if (filename.indexOf('cover') !== -1) {
+                    templates.cover = file;
+                } else if (filename.indexOf('frontmatter') !== -1) {
+                    templates.frontmatter = file;
+                    frontmatterFound = true;
+                } else if (filename.indexOf('bodymatter') !== -1) {
+                    templates.bodymatter = file;
+                    bodymatterFound = true;
+                } else if (filename.indexOf('backmatter') !== -1) {
+                    templates.backmatter = file;
+                    backmatterFound = true;
+                } else {
+                    // Check if it's a specialized template (contains specific keywords)
+                    var isSpecialized = this._isSpecializedTemplate(filename);
+                    
+                    if (isSpecialized) {
+                        templates.specialized.push(file);
+                    } else {
+                        // Classify as before/after based on alphabetical position
+                        if (!frontmatterFound) {
+                            templates.before.push(file);
+                        } else if (bodymatterFound || backmatterFound) {
+                            templates.after.push(file);
+                        } else {
+                            // Between frontmatter and backmatter, add to before
+                            templates.before.push(file);
+                        }
+                    }
+                }
+            }
+            
+            return templates;
+        };
+        
+        /**
+         * Checks if a template is specialized (contains specific content keywords)
+         * @param {string} filename - Template filename
+         * @return {boolean} True if template is specialized
+         * @private
+         */
+        this._isSpecializedTemplate = function(filename) {
+            var specializedKeywords = [
+                'bibliographie', 'bibliography', 'biblio',
+                'index', 'indexes', 'indices',
+                'annexe', 'appendix', 'appendices',
+                'glossaire', 'glossary',
+                'preface', 'préface',
+                'conclusion', 'epilogue', 'épilogue',
+                'remerciements', 'acknowledgments',
+                'dedication', 'dédicace',
+                'colophon',
+                'notes'
+            ];
+            
+            for (var k = 0; k < specializedKeywords.length; k++) {
+                if (filename.indexOf(specializedKeywords[k]) !== -1) {
+                    return true;
+                }
+            }
+            
+            return false;
+        };
+        
+        /**
+         * Determines template type based on Markdown filename content
+         * @param {string} mdFileName - Markdown filename
+         * @return {string} Template type: 'frontmatter', 'bodymatter', or 'backmatter'
+         * @private
+         */
+        this._determineTemplateType = function(mdFileName) {
+            var filename = mdFileName.toLowerCase();
+            
+            // Frontmatter keywords
+            var frontmatterKeywords = [
+                'prologue', 'abstract', 'acknowledgments', 'copyright', 'dedication', 
+                'credits', 'imprint', 'foreword', 'preface', 'introduction',
+                'avant-propos', 'préface', 'dédicace', 'remerciements', 'crédits'
+            ];
+            
+            // Backmatter keywords
+            var backmatterKeywords = [
+                'appendix', 'colophon', 'bibliography', 'index', 'conclusion',
+                'annexe', 'bibliographie', 'glossaire', 'épilogue', 'postface'
+            ];
+            
+            // Bodymatter keywords  
+            var bodymatterKeywords = [
+                'chapter', 'chapitre', 'part', 'partie'
+            ];
+            
+            // Check each category
+            for (var i = 0; i < frontmatterKeywords.length; i++) {
+                if (filename.indexOf(frontmatterKeywords[i]) !== -1) {
+                    return 'frontmatter';
+                }
+            }
+            
+            for (var j = 0; j < backmatterKeywords.length; j++) {
+                if (filename.indexOf(backmatterKeywords[j]) !== -1) {
+                    return 'backmatter';
+                }
+            }
+            
+            for (var k = 0; k < bodymatterKeywords.length; k++) {
+                if (filename.indexOf(bodymatterKeywords[k]) !== -1) {
+                    return 'bodymatter';
+                }
+            }
+            
+            // Default fallback
+            return 'bodymatter';
+        };
+        
+        /**
+         * Selects the best template for a Markdown file with priority matching
+         * @param {string} mdFileName - Markdown filename
+         * @param {string} templateType - Detected template type
+         * @return {File|null} Best matching template
+         * @private
+         */
+        this._selectBestTemplate = function(mdFileName, templateType) {
+            if (!mdFileName) return this.templates.bodymatter;
+            
+            // Extract keywords from MD filename (remove numbers and extension)
+            var mdKeywords = this._extractKeywords(mdFileName);
+            
+            // Build list of all available templates with their keywords
+            var allTemplates = [];
+            
+            // Add templates from all categories
+            if (this.templates.frontmatter) {
+                allTemplates.push({
+                    file: this.templates.frontmatter,
+                    type: 'frontmatter',
+                    keywords: this._extractKeywords(this.templates.frontmatter.name)
+                });
+            }
+            
+            if (this.templates.bodymatter) {
+                allTemplates.push({
+                    file: this.templates.bodymatter,
+                    type: 'bodymatter', 
+                    keywords: this._extractKeywords(this.templates.bodymatter.name)
+                });
+            }
+            
+            if (this.templates.backmatter) {
+                allTemplates.push({
+                    file: this.templates.backmatter,
+                    type: 'backmatter',
+                    keywords: this._extractKeywords(this.templates.backmatter.name)
+                });
+            }
+            
+            // Add all before templates
+            for (var b = 0; b < this.templates.before.length; b++) {
+                allTemplates.push({
+                    file: this.templates.before[b],
+                    type: 'before',
+                    keywords: this._extractKeywords(this.templates.before[b].name)
+                });
+            }
+            
+            // Add all specialized templates
+            for (var s = 0; s < this.templates.specialized.length; s++) {
+                allTemplates.push({
+                    file: this.templates.specialized[s],
+                    type: 'specialized',
+                    keywords: this._extractKeywords(this.templates.specialized[s].name)
+                });
+            }
+            
+            // Find best match based on keyword similarity
+            var bestMatch = null;
+            var bestScore = 0;
+            
+            for (var t = 0; t < allTemplates.length; t++) {
+                var template = allTemplates[t];
+                var score = this._calculateMatchScore(mdKeywords, template.keywords, template.type, templateType);
+                
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestMatch = template.file;
+                }
+            }
+            
+            // Si on a trouvé un match spécialisé avec un bon score, l'utiliser
+            if (bestMatch && bestScore >= 60) {
+                return bestMatch;
+            }
+            
+            // Sinon, utiliser la logique de fallback par type
+            if (templateType === 'frontmatter' && this.templates.frontmatter) {
+                return this.templates.frontmatter;
+            } else if (templateType === 'backmatter' && this.templates.backmatter) {
+                return this.templates.backmatter;
+            } else {
+                return this.templates.bodymatter;
+            }
+        };
+        
+        /**
+         * Extracts meaningful keywords from a filename
+         * @param {string} filename - Filename to process
+         * @return {Array} Array of keywords
+         * @private
+         */
+        this._extractKeywords = function(filename) {
+            if (!filename) return [];
+            
+            // Remove file extension and common prefixes
+            var clean = filename.toLowerCase()
+                .replace(/\.indd$/, '')
+                .replace(/\.md$/, '')
+                .replace(/^[a-z]+-\d+-\d*-?/, '') // Remove patterns like "LIVRE-5-2-"
+                .replace(/^\d+-/, ''); // Remove patterns like "13-"
+            
+            // Split by common separators and filter out short words
+            var allWords = clean.split(/[-_\s]+/);
+            var words = [];
+            for (var w = 0; w < allWords.length; w++) {
+                if (allWords[w].length > 2) { // Keep words longer than 2 characters
+                    words.push(allWords[w]);
+                }
+            }
+            
+            return words;
+        };
+        
+        /**
+         * Calculates match score between MD keywords and template keywords
+         * @param {Array} mdKeywords - Keywords from Markdown filename
+         * @param {Array} templateKeywords - Keywords from template filename  
+         * @param {string} templateType - Template type category
+         * @param {string} expectedType - Expected template type for MD file
+         * @return {number} Match score (0-100)
+         * @private
+         */
+        this._calculateMatchScore = function(mdKeywords, templateKeywords, templateType, expectedType) {
+            var score = 0;
+            
+            // Base score for type matching
+            if (templateType === expectedType) {
+                score += 30;
+            } else if (templateType === 'specialized') {
+                // Specialized templates get a bonus for keyword matching
+                score += 20;
+            }
+            
+            // Keyword matching score
+            var keywordScore = 0;
+            var totalPossible = Math.max(mdKeywords.length, templateKeywords.length);
+            
+            if (totalPossible > 0) {
+                for (var i = 0; i < mdKeywords.length; i++) {
+                    var mdKeyword = mdKeywords[i];
+                    
+                    for (var j = 0; j < templateKeywords.length; j++) {
+                        var templateKeyword = templateKeywords[j];
+                        
+                        // Exact match
+                        if (mdKeyword === templateKeyword) {
+                            keywordScore += 60;
+                        }
+                        // Partial match (one contains the other)
+                        else if (mdKeyword.indexOf(templateKeyword) !== -1 || 
+                                 templateKeyword.indexOf(mdKeyword) !== -1) {
+                            keywordScore += 30;
+                        }
+                        // Similarity for common terms
+                        else if (this._areSimilarTerms(mdKeyword, templateKeyword)) {
+                            keywordScore += 15;
+                        }
+                    }
+                }
+                
+                // Normalize keyword score
+                keywordScore = Math.min(70, keywordScore); // Cap at 70 points
+            }
+            
+            return score + keywordScore;
+        };
+        
+        /**
+         * Checks if two terms are semantically similar
+         * @param {string} term1 - First term
+         * @param {string} term2 - Second term
+         * @return {boolean} True if terms are similar
+         * @private
+         */
+        this._areSimilarTerms = function(term1, term2) {
+            var synonyms = {
+                'bibliographie': ['bibliography', 'biblio', 'references'],
+                'bibliography': ['bibliographie', 'biblio', 'references'],
+                'index': ['indexes', 'indices'],
+                'annexe': ['appendix', 'appendices'],
+                'appendix': ['annexe', 'appendices'],
+                'glossaire': ['glossary'],
+                'glossary': ['glossaire'],
+                'preface': ['préface', 'avant-propos'],
+                'préface': ['preface', 'avant-propos'],
+                'conclusion': ['epilogue', 'épilogue'],
+                'epilogue': ['conclusion', 'épilogue'],
+                'épilogue': ['conclusion', 'epilogue']
+            };
+            
+            var term1Synonyms = synonyms[term1] || [];
+            var term2Synonyms = synonyms[term2] || [];
+            
+            return arrayContains(term1Synonyms, term2) || arrayContains(term2Synonyms, term1);
         };
     }
     
@@ -1508,6 +2379,117 @@ var BookCreator = (function() {
     };
     
     /**
+     * Auto-detects Build/InDesign folder for book generation
+     * @param {string} yamlPath - Path to the YAML file
+     * @return {Folder|null} Found Build/InDesign folder or null
+     */
+    function autoDetectBuildFolder(yamlPath) {
+        if (!yamlPath) return null;
+        
+        var yamlFile = File(yamlPath);
+        if (!yamlFile.exists) return null;
+        
+        var searchDir = yamlFile.parent;
+        
+        // Define possible build folder patterns
+        var buildVariants = [
+            ["Build", "InDesign"], ["build", "indesign"], 
+            ["Build", "indesign"], ["build", "InDesign"],
+            ["output", "InDesign"], ["Output", "InDesign"],
+            ["export", "InDesign"], ["Export", "InDesign"]
+        ];
+        
+        // Search in current directory and parent
+        var searchDirs = [searchDir, searchDir.parent];
+        
+        for (var d = 0; d < searchDirs.length; d++) {
+            var baseDir = searchDirs[d];
+            if (!baseDir || !baseDir.exists) continue;
+            
+            // Try each build folder combination
+            for (var v = 0; v < buildVariants.length; v++) {
+                var pathParts = buildVariants[v];
+                var testPath = baseDir.fsName;
+                
+                for (var p = 0; p < pathParts.length; p++) {
+                    testPath += "/" + pathParts[p];
+                }
+                
+                var testFolder = new Folder(testPath);
+                if (testFolder.exists) {
+                    return testFolder;
+                }
+            }
+            
+            // Also check for simple "Build" folder
+            var simpleBuildPath = baseDir.fsName + "/Build";
+            var simpleBuildFolder = new Folder(simpleBuildPath);
+            if (simpleBuildFolder.exists) {
+                return simpleBuildFolder;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Auto-detects template folder based on YAML file location
+     * @param {string} yamlPath - Path to the YAML file
+     * @return {Folder|null} Found template folder or null
+     */
+    function autoDetectTemplateFolder(yamlPath) {
+        if (!yamlPath) return null;
+        
+        var yamlFile = File(yamlPath);
+        if (!yamlFile.exists) return null;
+        
+        var searchDir = yamlFile.parent;
+        
+        // Define possible template folder patterns
+        var templateVariants = [
+            "template", "Template", "TEMPLATE", "templates", "Templates", "TEMPLATES",
+            "indesign", "InDesign", "INDESIGN"
+        ];
+        
+        // Define possible subdirectory combinations
+        var subdirCombinations = [
+            ["template"], ["Template"], ["templates"], ["Templates"],
+            ["template", "indesign"], ["Template", "InDesign"], 
+            ["templates", "indesign"], ["Templates", "InDesign"],
+            ["indesign"], ["InDesign"]
+        ];
+        
+        // Search in current directory, parent, and grandparent
+        var searchDirs = [searchDir, searchDir.parent, searchDir.parent ? searchDir.parent.parent : null];
+        
+        for (var d = 0; d < searchDirs.length; d++) {
+            var baseDir = searchDirs[d];
+            if (!baseDir || !baseDir.exists) continue;
+            
+            // Try each subdirectory combination
+            for (var c = 0; c < subdirCombinations.length; c++) {
+                var pathParts = subdirCombinations[c];
+                var testPath = baseDir.fsName;
+                
+                for (var p = 0; p < pathParts.length; p++) {
+                    testPath += "/" + pathParts[p];
+                }
+                
+                var testFolder = new Folder(testPath);
+                if (testFolder.exists) {
+                    // Check if folder contains .indd files
+                    var inddFiles = testFolder.getFiles("*.indd");
+                    if (inddFiles.length > 0) {
+                        return testFolder;
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
      * @namespace BookUtils
      * @description Utilities for book creation and manipulation
      */
@@ -1523,6 +2505,16 @@ var BookCreator = (function() {
              * @return {Object} Validation result with status and message
              */
             validate: function(isbnInput) {
+                // Check for placeholder pattern (978-2-940426-XX-X or similar)
+                var placeholderPattern = /^978-[\d-]*[X-]+[\d-]*$/i;
+                if (placeholderPattern.test(isbnInput)) {
+                    return { 
+                        valid: true, 
+                        result: isbnInput,
+                        message: "Placeholder ISBN accepted" 
+                    };
+                }
+                
                 var isbnDigits = isbnInput.replace(/\D/g, "");
                 
                 if (isbnDigits.length < 12) {
@@ -1688,8 +2680,8 @@ var BookCreator = (function() {
                     "<<Subtitle>>": bookInfo.subtitle || "",
                     "<<ISBN_Print>>": bookInfo.isbnPrint || "",
                     "<<ISBN_Ebook>>": bookInfo.isbnEbook || "",
-                    "<<Critical_Apparatus>>": bookInfo.critical || "",
                     "<<Translation>>": bookInfo.translation || "",
+                    "<<Critical_Apparatus>>": bookInfo.critical || "",
                     "<<Print_Date>>": bookInfo.printDate || "",
                     "<<Editions>>": bookInfo.editions || "",
                     "<<Funding>>": bookInfo.funding || "",
@@ -1712,9 +2704,9 @@ var BookCreator = (function() {
                 
                 // Placeholders that should be completely removed if empty
                 var emptyFields = [
-                    "<<Critical_Apparatus>>", 
-                    "<<Translation>>", 
-                    "<<Original_Title>>", 
+                    "<<Original_Title>>",
+                    "<<Translator_Display>>",
+                    "<<Critical_Display>>",
                     "<<Cover_Credit>>", 
                     "<<Editions>>", 
                     "<<Funding>>"
@@ -1846,60 +2838,8 @@ var BookCreator = (function() {
                     
                     var yamlData = YAMLParser.parse(content);
                     
-                    // Mapping between Pandoc fields and BookCreator fields
-                    var fieldMappings = {
-                        // Standard Pandoc fields
-                        "title": "title",
-                        "subtitle": "subtitle", 
-                        "author": "author",
-                        "date": "printDate",
-                        "lang": "language",
-                        "language": "language",
-                        "rights": "rights",
-                        "copyright": "rights", // Alias for rights
-                        
-                        // ISBN specific fields
-                        "isbn-print": "isbnPrint",
-                        "isbn-ebook": "isbnEbook",
-                        "isbnprint": "isbnPrint", // No-hyphen alias
-                        "isbnebook": "isbnEbook", // No-hyphen alias
-                        
-                        // BookCreator specific fields
-                        "critical": "critical",
-                        "translation": "translation", 
-                        "originalTitle": "originalTitle",
-                        "coverCredit": "coverCredit",
-                        "editions": "editions",
-                        "funding": "funding",
-                        "price": "price"
-                    };
-                    
-                    var result = {};
-                    
-                    // Apply mappings
-                    for (var srcField in fieldMappings) {
-                        if (yamlData.hasOwnProperty(srcField)) {
-                            var destField = fieldMappings[srcField];
-                            // Ensure there are no leading spaces
-                            var value = yamlData[srcField];
-                            if (typeof value === "string") {
-                                value = value.replace(/^\s+/, "");
-                            }
-                            result[destField] = value;
-                        }
-                    }
-                    
-                    // Include all other fields without specific mapping
-                    for (var field in yamlData) {
-                        if (!fieldMappings.hasOwnProperty(field)) {
-                            // Ensure there are no leading spaces
-                            var value = yamlData[field];
-                            if (typeof value === "string") {
-                                value = value.replace(/^\s+/, "");
-                            }
-                            result[field] = value;
-                        }
-                    }
+                    // Use PandocMapper to handle complex structures
+                    var result = PandocMapper.mapToBookCreator(yamlData);
                     
                     return {
                         result: result,
@@ -1929,7 +2869,7 @@ var BookCreator = (function() {
                         "title": "title",
                         "subtitle": "subtitle",
                         "author": "author", 
-                        "printDate": "date",
+                        "printDate": "published-print",
                         "language": "lang",
                         "rights": "rights",
                         
@@ -1938,10 +2878,10 @@ var BookCreator = (function() {
                         "isbnEbook": "isbn-ebook",
                         
                         // BookCreator specific fields preserved as-is
-                        "critical": "critical",
-                        "translation": "translation",
+                        "translator-display": "translation",
+                        "critical-display": "critical",
                         "originalTitle": "originalTitle", 
-                        "coverCredit": "coverCredit",
+                        "cover-note": "coverCredit",
                         "editions": "editions",
                         "funding": "funding",
                         "price": "price"
@@ -1956,6 +2896,53 @@ var BookCreator = (function() {
                             yamlData[destField] = bookInfo[srcField];
                         }
                     }
+                    
+                    // Export title as complex structure if both title and subtitle exist
+                    if (bookInfo.title || bookInfo.subtitle) {
+                        yamlData.title = [];
+                        if (bookInfo.title) {
+                            yamlData.title.push({
+                                type: "main",
+                                text: bookInfo.title
+                            });
+                        }
+                        if (bookInfo.subtitle) {
+                            yamlData.title.push({
+                                type: "subtitle", 
+                                text: bookInfo.subtitle
+                            });
+                        }
+                        // Remove simple fields since we're using complex structure
+                        delete yamlData.title; // Remove if exists from simple mapping
+                        delete yamlData.subtitle; // Remove if exists from simple mapping
+                    }
+                    
+                    // Export creator as complex structure
+                    if (bookInfo.author) {
+                        yamlData.creator = [{
+                            role: "author",
+                            text: bookInfo.author
+                        }];
+                        // Remove simple field
+                        delete yamlData.author; // Remove if exists from simple mapping
+                    }
+                    
+                    // Export ISBN with different formats: complex for ebook, simple for print
+                    if (bookInfo.isbnEbook) {
+                        // Ebook uses complex identifier structure
+                        yamlData.identifier = [{
+                            scheme: "ISBN",
+                            text: bookInfo.isbnEbook
+                        }];
+                    }
+                    
+                    if (bookInfo.isbnPrint) {
+                        // Print uses simple isbn-print field (handled by normal mappings)
+                        // Nothing special needed here, normal mapping will handle it
+                    }
+                    
+                    // Don't delete isbn-print since we want to keep it simple
+                    delete yamlData["isbn-ebook"];
                     
                     // Include other unmapped fields
                     for (var field in bookInfo) {
@@ -1991,9 +2978,8 @@ var BookCreator = (function() {
                     hasInputFiles: false
                 };
                 
-                if (yamlData && yamlData["input-files"] && isArray(yamlData["input-files"]) && yamlData["input-files"].length > 0) {
-                    result.hasInputFiles = true;
-                }
+                // Plus besoin de input-files, on considère qu'il y a des fichiers si le YAML existe
+                result.hasInputFiles = true;
                 
                 return result;
             }
@@ -2041,84 +3027,84 @@ var BookCreator = (function() {
                 newWindow.show();
             };
             
+            // Book Information button
+            var infoBtn = win.add('button', undefined, I18n.__('bookInformation'));
+            infoBtn.onClick = function() {
+                UI.createInfoWindow(book.info, book.displayOptions, book.markdownOptions, updateMdOptions, bookNameInput, book, templateFolderText, templateDetailsText);
+            };
+            
             // Main fields
             win.add('statictext', undefined, I18n.__('fileNamePrefix'));
             var bookNameInput = win.add('edittext', undefined, '');
             
-            win.add('statictext', undefined, I18n.__('chapterCount'));
-            var chapterCountInput = win.add('edittext', undefined, '');
-            
             // Templates panel
-            var templatesPanel = win.add('panel', undefined, I18n.__('templates'));
+            var templatesPanel = win.add('panel', undefined, 'Templates Folder');
             templatesPanel.alignChildren = 'fill';
+            templatesPanel.preferredSize.height = 120; // Taille fixe
             
-            // Chapter template
-            var chapterTemplateBtn = templatesPanel.add('button', undefined, I18n.__('chapterTemplate'));
-            var chapterTemplateText = templatesPanel.add('statictext', undefined, I18n.__('noFileSelected'));
-            chapterTemplateBtn.onClick = function() {
-                var template = File.openDialog(I18n.__('chapterTemplate') + ' (*.indd)', '*.indd');
-                if (template) {
-                    book.templates.chapter = template;
-                    chapterTemplateText.text = template.name;
+            // Template folder selection
+            var templateFolderBtn = templatesPanel.add('button', undefined, 'Select Templates Folder');
+            var templateFolderText = templatesPanel.add('statictext', undefined, 'No folder selected.');
+            var templateDetailsText = templatesPanel.add('statictext', undefined, '');
+            templateDetailsText.preferredSize.height = 60;
+            
+            templateFolderBtn.onClick = function() {
+                var folder = Folder.selectDialog('Choose Templates Folder');
+                if (folder) {
+                    book.templateFolder = folder;
+                    book.templates = book._classifyTemplatesByOrder(folder);
+                    
+                    templateFolderText.text = folder.name;
+                    
+                    // Show discovered templates
+                    var details = "Discovered:\n";
+                    details += "Before: " + book.templates.before.length + " files\n";
+                    details += "Frontmatter: " + (book.templates.frontmatter ? "✓" : "✗") + "\n";
+                    details += "Bodymatter: " + (book.templates.bodymatter ? "✓" : "✗") + "\n";
+                    details += "Backmatter: " + (book.templates.backmatter ? "✓" : "✗") + "\n";
+                    details += "After: " + book.templates.after.length + " files\n";
+                    details += "Cover: " + (book.templates.cover ? "✓" : "✗");
+                    
+                    templateDetailsText.text = details;
                 }
             };
             
-            // Templates before chapters
-            var beforeTemplateBtn = templatesPanel.add('button', undefined, I18n.__('beforeTemplate'));
-            var beforeTemplateText = templatesPanel.add('statictext', undefined, I18n.__('filesSelected', 0));
-            beforeTemplateBtn.onClick = function() {
-                var templates = File.openDialog(I18n.__('beforeTemplate') + ' (*.indd)', '*.indd', true) || [];
-                book.templates.before = templates;
-                beforeTemplateText.text = I18n.__('filesSelected', templates.length);
-            };
+            // Text folder panel (optional manual selection)
+            var textPanel = win.add('panel', undefined, 'Text Folder');
+            textPanel.alignChildren = 'fill';
+            textPanel.preferredSize.height = 120; // Même taille que Templates
             
-            // Templates after chapters
-            var afterTemplateBtn = templatesPanel.add('button', undefined, I18n.__('afterTemplate'));
-            var afterTemplateText = templatesPanel.add('statictext', undefined, I18n.__('filesSelected', 0));
-            afterTemplateBtn.onClick = function() {
-                var templates = File.openDialog(I18n.__('afterTemplate') + ' (*.indd)', '*.indd', true) || [];
-                book.templates.after = templates;
-                afterTemplateText.text = I18n.__('filesSelected', templates.length);
-            };
+            var textFolderBtn = textPanel.add('button', undefined, 'Select Text Folder (optional)');
             
-            // Cover template
-            var coverTemplateBtn = templatesPanel.add('button', undefined, I18n.__('coverTemplate'));
-            var coverTemplateText = templatesPanel.add('statictext', undefined, I18n.__('noFileSelected'));
-            coverTemplateBtn.onClick = function() {
-                var template = File.openDialog(I18n.__('coverTemplate') + ' (*.indd)', '*.indd');
-                if (template) {
-                    book.templates.cover = template;
-                    coverTemplateText.text = template.name;
+            // Markdown detection status
+            var mdDiagnostic = textPanel.add('statictext', undefined, I18n.__('noYAMLLoaded'));
+            mdDiagnostic.preferredSize.height = 60;
+            
+            textFolderBtn.onClick = function() {
+                var folder = Folder.selectDialog('Choose Text Folder');
+                if (folder) {
+                    book.markdownOptions.textFolderPath = folder.fsName;
                 }
             };
             
-            // Book Information button
-            var infoBtn = win.add('button', undefined, I18n.__('bookInformation'));
-            infoBtn.onClick = function() {
-                UI.createInfoWindow(book.info, book.displayOptions, book.markdownOptions, updateMdOptions);
-            };
-            
-            // Markdown section with single checkbox
-            var markdownGroup = win.add('group');
-            markdownGroup.orientation = "row";
-            markdownGroup.alignment = "left";
-            markdownGroup.margins = [0, 10, 0, 0];
-            
-            // Markdown injection checkbox
-            var injectMdCheck = markdownGroup.add('checkbox', undefined, I18n.__('injectMarkdown'));
-            injectMdCheck.enabled = false;
-            
-            // Update Markdown options when changed
-            injectMdCheck.onClick = function() {
-                book.markdownOptions.injectMarkdown = injectMdCheck.value;
-            };
-            
-            // Function to update Markdown options after info window returns
             function updateMdOptions() {
-                // Update checkbox state based on detected data
-                injectMdCheck.enabled = book.markdownOptions.hasInputFiles;
+                // Auto-enable markdown injection if files are detected
+                book.markdownOptions.injectMarkdown = book.markdownOptions.hasInputFiles;
                 
-                if (!injectMdCheck.enabled) injectMdCheck.value = false;
+                // Update diagnostic text in main window
+                if (typeof mdDiagnostic !== 'undefined') {
+                    if (book.markdownOptions.yamlPath) {
+                        if (book.markdownOptions.hasInputFiles) {
+                            var allMdFiles = book._getAllMarkdownFilesFromFolder();
+                            var fileCount = allMdFiles.length;
+                            mdDiagnostic.text = I18n.__('inputFilesDetected') + " (" + fileCount + " files)";
+                        } else {
+                            mdDiagnostic.text = I18n.__('inputFilesNotDetected');
+                        }
+                    } else {
+                        mdDiagnostic.text = I18n.__('noYAMLLoaded');
+                    }
+                }
             }
             
             // Action buttons
@@ -2130,10 +3116,6 @@ var BookCreator = (function() {
             createBtn.onClick = function() {
                 // Update book info
                 book.name = bookNameInput.text;
-                book.chapterCount = chapterCountInput.text;
-                
-                // Update Markdown options
-                book.markdownOptions.injectMarkdown = injectMdCheck.value;
                 
                 // Validate data
                 var validation = book.validate();
@@ -2142,22 +3124,27 @@ var BookCreator = (function() {
                     return;
                 }
                 
-                // Generate book
-                var folder = Folder.selectDialog(I18n.__('chooseDestionationFolder'));
+                // Generate book - with auto-detected default folder
+                var defaultFolder = null;
+                if (book.markdownOptions && book.markdownOptions.yamlPath) {
+                    defaultFolder = autoDetectBuildFolder(book.markdownOptions.yamlPath);
+                }
+                
+                var folder = Folder.selectDialog(I18n.__('chooseDestionationFolder'), defaultFolder);
                 if (folder) {
                     try {
                         // Disable InDesign native error messages during execution
                         var originalUserInteractionLevel = app.scriptPreferences.userInteractionLevel;
                         app.scriptPreferences.userInteractionLevel = UserInteractionLevels.NEVER_INTERACT;
                         
-                        var result = book.generate(folder);
+                        var result = book.generate(folder, win);
                         
                         // Restore user interaction level BEFORE opening the book
                         app.scriptPreferences.userInteractionLevel = originalUserInteractionLevel;
                         
                         if (result) {
                             alert(I18n.__('bookGenerated'));
-                            win.close();
+                            // La fenêtre est déjà fermée dans generate()
                         }
                     } catch (e) {
                         // Restore user interaction level in case of error
@@ -2177,7 +3164,7 @@ var BookCreator = (function() {
          * @param {Object} markdownOptions - Markdown settings
          * @param {Function} updateMdDiagnosticCallback - Callback for updating Markdown options
          */
-        createInfoWindow: function(bookInfo, displayOptions, markdownOptions, updateMdDiagnosticCallback) {
+        createInfoWindow: function(bookInfo, displayOptions, markdownOptions, updateMdDiagnosticCallback, bookNameInput, book, templateFolderText, templateDetailsText) {
             var infoWin = new Window("dialog", I18n.__('bookInformation'));
             infoWin.orientation = "column";
             infoWin.alignChildren = "fill";
@@ -2244,32 +3231,19 @@ var BookCreator = (function() {
             var printDateInput = col1.add("edittext", undefined, bookInfo.printDate || "");
             printDateInput.characters = 25;
             
-            // Simplified Markdown diagnostics
-            var mdDiagnosticGroup = col1.add("group");
-            mdDiagnosticGroup.orientation = "column";
-            mdDiagnosticGroup.alignChildren = "left";
-            mdDiagnosticGroup.margins = [0, 10, 0, 0];
-            
-            var mdDiagnosticLabel = mdDiagnosticGroup.add("statictext", undefined, I18n.__('markdownDetection'));
-            var mdDiagnostic = mdDiagnosticGroup.add("statictext", undefined, 
-                markdownOptions.yamlPath ? 
-                (markdownOptions.hasInputFiles ? I18n.__('inputFilesDetected') : I18n.__('inputFilesNotDetected')) : 
-                I18n.__('noYAMLLoaded'));
-            mdDiagnostic.preferredSize.width = 250;
-            
             // Column 2
             var col2 = inputGroup.add("group");
             col2.orientation = "column";
             col2.alignChildren = "left";
             col2.spacing = 5;
             
-            col2.add("statictext", undefined, I18n.__('criticalApparatus'));
+            col2.add("statictext", undefined, I18n.__('critical'));
             var criticalInput = col2.add("edittext", undefined, bookInfo.critical || "", {multiline: true});
-            criticalInput.preferredSize = [250, 40];
+            criticalInput.preferredSize = [250, 60];
             
             col2.add("statictext", undefined, I18n.__('translation'));
             var translationInput = col2.add("edittext", undefined, bookInfo.translation || "", {multiline: true});
-            translationInput.preferredSize = [250, 40];
+            translationInput.preferredSize = [250, 60];
             
             // Cover credit with checkbox
             var coverCreditGroup = col2.add("group");
@@ -2335,6 +3309,12 @@ var BookCreator = (function() {
                         rightsInput.text = yamlData.rights || "";
                         priceInput.text = yamlData.price || "";
                         
+                        // Auto-remplir le préfixe si vide
+                        if (bookNameInput && bookNameInput.text === "" && yamlData.title) {
+                            var autoPrefix = normalizeBookTitle(yamlData.title);
+                            bookNameInput.text = autoPrefix;
+                        }
+                        
                         // Store YAML data and check Markdown elements
                         markdownOptions.yamlPath = importResult.yamlPath;
                         markdownOptions.yamlMeta = importResult.yamlMeta;
@@ -2342,17 +3322,69 @@ var BookCreator = (function() {
                         var mdElements = BookUtils.File.detectMarkdownElements(importResult.yamlMeta);
                         markdownOptions.hasInputFiles = mdElements.hasInputFiles;
                         
-                        // Update diagnostic text in this window
-                        mdDiagnostic.text = markdownOptions.hasInputFiles ? 
-                                           I18n.__('inputFilesDetected') : 
-                                           I18n.__('inputFilesNotDetected');
-                                            
+                        // Auto-detect template folder
+                        var detectedTemplateFolder = autoDetectTemplateFolder(importResult.yamlPath);
+                        if (detectedTemplateFolder) {
+                            // Update the book's template folder and classification
+                            book.templateFolder = detectedTemplateFolder;
+                            book.templates = book._classifyTemplatesByOrder(detectedTemplateFolder);
+                            
+                            // Update the main window's template display
+                            if (typeof templateFolderText !== 'undefined') {
+                                templateFolderText.text = detectedTemplateFolder.name;
+                                
+                                // Update template details
+                                var details = "Discovered:\n";
+                                details += "Before: " + book.templates.before.length + " files\n";
+                                details += "Frontmatter: " + (book.templates.frontmatter ? "✓" : "✗") + "\n";
+                                details += "Bodymatter: " + (book.templates.bodymatter ? "✓" : "✗") + "\n";
+                                details += "Backmatter: " + (book.templates.backmatter ? "✓" : "✗") + "\n";
+                                details += "After: " + book.templates.after.length + " files\n";
+                                details += "Cover: " + (book.templates.cover ? "✓" : "✗");
+                                
+                                if (typeof templateDetailsText !== 'undefined') {
+                                    templateDetailsText.text = details;
+                                }
+                            }
+                        }
+                        
                         // Update Markdown options in main window
                         if (updateMdDiagnosticCallback) {
                             updateMdDiagnosticCallback();
                         }
                         
-                        alert(I18n.__('yamlImportCompleted'));
+                        // Créer un message complet d'import
+                        var importMessage = I18n.__('yamlImportCompleted');
+                        
+                        // Ajouter l'info sur le dossier template détecté
+                        if (detectedTemplateFolder) {
+                            var templateInfo = I18n.getLanguage() === 'fr' ? 
+                                "\nDossier de templates d\u00E9tect\u00E9: " + detectedTemplateFolder.name :
+                                "\nTemplate folder detected: " + detectedTemplateFolder.name;
+                            importMessage += templateInfo;
+                        } else {
+                            var noTemplateInfo = I18n.getLanguage() === 'fr' ? 
+                                "\nAucun dossier de templates d\u00E9tect\u00E9 automatiquement." :
+                                "\nNo template folder auto-detected.";
+                            importMessage += noTemplateInfo;
+                        }
+                        
+                        // Ajouter l'info sur les fichiers Markdown
+                        if (markdownOptions.hasInputFiles) {
+                            var allMdFiles = book._getAllMarkdownFilesFromFolder();
+                            var fileCount = allMdFiles.length;
+                            var markdownInfo = I18n.getLanguage() === 'fr' ? 
+                                "\nFichiers Markdown d\u00E9tect\u00E9s: " + fileCount + " fichiers" :
+                                "\nMarkdown files detected: " + fileCount + " files";
+                            importMessage += markdownInfo;
+                        } else {
+                            var noMarkdownInfo = I18n.getLanguage() === 'fr' ? 
+                                "\nAucun fichier Markdown d\u00E9tect\u00E9." :
+                                "\nNo Markdown files detected.";
+                            importMessage += noMarkdownInfo;
+                        }
+                        
+                        alert(importMessage);
                     } catch (e) {
                         LogManager.logError(I18n.__('error'), e);
                     }
