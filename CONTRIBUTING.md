@@ -88,3 +88,20 @@ You can help the community by:
 ## Closing Policy
 
 Inactive issues and merge requests may be closed after a period of inactivity, in line with the **Closing Policy**.
+
+---
+
+### Markdown-Import (MIT license)
+
+- Contributions are accepted under the **Developer Certificate of Origin (DCO)**:
+  - [Developer Certificate of Origin (DCO 1.1)](/docs/legal/developer_certificate_of_origin.md)
+- By contributing, you certify that you have the right to submit your code and that you agree to its redistribution under the MIT license.
+
+### All other Spectral Lab projects  
+(Preparo, Refero, AutomaticBook suite, BookCreator, Superscript, Inspectora, etc.)
+
+- Contributions are accepted only with a formal agreement:
+  - **ICLA (Individual Contributor License Agreement)**:
+    - [Individual Contributor License Agreement (ICLA)](/docs/legal/individual_contributor_license_agreement.md)
+  - **CCLA (Corporate Contributor License Agreement)**:
+    - [Corporate Contributor License Agreement (CCLA)](/docs/legal/corporate_contributor_license_agreement.md)
