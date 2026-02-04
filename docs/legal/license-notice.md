@@ -3,7 +3,8 @@ Copyright (c) 2025-present Spectral Lab
 Portions of this software are licensed as follows:
 
 - All content residing under the "docs/" directory is licensed under
-  the Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0).
+  the Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0),
+  except for logos, trademarks, and brand assets.
 
 - All client-side JavaScript (when served directly or after being compiled,
   arranged, augmented, or combined) is licensed under the GNU Affero General
