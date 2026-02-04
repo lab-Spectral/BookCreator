@@ -39,7 +39,6 @@ Unless otherwise agreed in writing with Spectral Lab, all contributions fall und
 
 - **Core software** (Preparo, Refero, AutomaticBook suite, BookCreator, Superscript, Inspectora, etc.): [LICENSE GNU Affero General Public License v3.0](docs/legal/license-notice.md)
 - **Markdown-Import**: [LICENSE MIT](docs/legal/license-notice.md)
-- **Documentation (`/doc/guide/`)**: [LICENSE Creative Commons Attribution-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/)
 - **Cloud services (Spectral Cloud)**: Proprietary license (commercial terms available on request)
 
 ---
