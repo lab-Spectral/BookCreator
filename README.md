@@ -8,12 +8,9 @@ BookCreator is an advanced script for Adobe InDesign designed to automate the en
 
 ➡️ [Download latest release](https://github.com/lab-Spectral/BookCreator/releases/latest)
 
-
-
-
-### Licensing
-See the [LICENSE](LICENSE) file for details on licensing.
-
 ### Contributing
 BookCreator is an open source project and we welcome community contributions.
 Please refer to the [Contributing Guide](CONTRIBUTING.md) for more details.
+
+### Licensing
+See the [LICENSE](LICENSE) file for details on licensing.
