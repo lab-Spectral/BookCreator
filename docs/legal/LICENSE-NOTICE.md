@@ -29,5 +29,5 @@ rights, branding permissions, and professional support.
 
 For the full license terms, see:
 
-- LICENSE (GNU Affero General Public License v3.0)
-- Contribution rules and contributor agreements
+- [LICENSE (GNU Affero General Public License v3.0)](../../LICENSE.md)
+- [Contribution rules and contributor agreements](../../CONTRIBUTING.md)
