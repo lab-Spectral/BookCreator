@@ -11,23 +11,25 @@ Depending on the project you contribute to:
 
 ### Markdown-Import (MIT license)
 
-- Contributions are accepted under the **Developer Certificate of Origin (DCO)**.
+- Contributions are accepted under the **Developer Certificate of Origin (DCO)**:
+  - [Developer Certificate of Origin (DCO 1.1)](/docs/legal/developer_certificate_of_origin.md)
 - By contributing, you certify that you have the right to submit your code and that you agree to its redistribution under the MIT license.
 
 ### All other Spectral Lab projects  
 (Preparo, Refero, AutomaticBook suite, BookCreator, Superscript, Inspectora, etc.)
 
 - Contributions are accepted only with a formal agreement:
-  - **ICLA (Individual Contributor License Agreement)** if you contribute as an individual.
-  - **CCLA (Corporate Contributor License Agreement)** if you contribute on behalf of a company.
+  - **ICLA (Individual Contributor License Agreement)** if you contribute as an individual:
+    - [Individual Contributor License Agreement (ICLA)](/docs/legal/individual_contributor_license_agreement.md)
+  - **CCLA (Corporate Contributor License Agreement)** if you contribute on behalf of a company:
+    - [Corporate Contributor License Agreement (CCLA)](/docs/legal/corporate_contributor_license_agreement.md)
 - These contributions are published under the **AGPL v3** license (strong copyleft) to guarantee that all modifications remain free.
 - In some cases (Spectral Cloud), contributed code may be integrated into **proprietary components**.
   - These proprietary components are **not part of the open source repositories** and are distributed under **separate commercial terms**.
   - By contributing, you agree that Spectral Lab may reuse your contribution in its commercial products.
   - Revenues from these products help sustain the **non-profit association** that maintains the project and ensure the continuity of free development.
 
-**Unless otherwise agreed in writing, Spectral Lab remains the sole copyright holder of the project codebase.**  
-This allows Spectral Lab to maintain a dual-licensing model (open source and commercial) and to ensure the long-term viability of the project.
+Spectral Lab retains the right to relicense the Work and Contributions under a dual-licensing model (open source and commercial), as permitted by the ICLA/CCLA.
 
 Unless otherwise agreed in writing with Spectral Lab, all contributions fall under this framework.
 
@@ -88,20 +90,3 @@ You can help the community by:
 ## Closing Policy
 
 Inactive issues and merge requests may be closed after a period of inactivity, in line with the **Closing Policy**.
-
----
-
-### Markdown-Import (MIT license)
-
-- Contributions are accepted under the **Developer Certificate of Origin (DCO)**:
-  - [Developer Certificate of Origin (DCO 1.1)](/docs/legal/developer_certificate_of_origin.md)
-- By contributing, you certify that you have the right to submit your code and that you agree to its redistribution under the MIT license.
-
-### All other Spectral Lab projects  
-(Preparo, Refero, AutomaticBook suite, BookCreator, Superscript, Inspectora, etc.)
-
-- Contributions are accepted only with a formal agreement:
-  - **ICLA (Individual Contributor License Agreement)**:
-    - [Individual Contributor License Agreement (ICLA)](/docs/legal/individual_contributor_license_agreement.md)
-  - **CCLA (Corporate Contributor License Agreement)**:
-    - [Corporate Contributor License Agreement (CCLA)](/docs/legal/corporate_contributor_license_agreement.md)
