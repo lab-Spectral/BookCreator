@@ -13,4 +13,4 @@ BookCreator is an open source project and we welcome community contributions.
 Please refer to the [Contributing Guide](CONTRIBUTING.md) for more details.
 
 ### Licensing
-See the [LICENSE AGPL v3](LICENSE) file for details on licensing.
+See the [LICENSE AGPL v3](docs/legal/license-notice.md) file for details on licensing.
