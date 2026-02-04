@@ -25,7 +25,7 @@ By making a contribution to this project, I certify that:
 
 The license applicable to your contribution depends on the project and the files you contribute to.
 
-- For software licensing terms, see: [LICENSE](/LICENSE) and (if present) [NOTICE](/NOTICE).
+- For software licensing terms, see: [LICENSE](license-notice.md).
 - For contribution rules and contributor agreements, see: [CONTRIBUTING.md](/CONTRIBUTING.md).
 
 Documentation in this repository may be licensed under Creative Commons terms (for example CC BY-SA 4.0) as described in the documentation and/or NOTICE file.
