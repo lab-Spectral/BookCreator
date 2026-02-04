@@ -1,4 +1,5 @@
-Copyright (c) 2025-present Spectral Lab
+Copyright (c) 2025-present Spectral Lab  
+Copyright (c) 2025-present Gael Goy
 
 Portions of this software are licensed as follows:
 
