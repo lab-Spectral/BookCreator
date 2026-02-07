@@ -6,7 +6,7 @@
   * from templates. It can automatically import Markdown 
   * text and inject it into your generated book, along with variables.
   * 
-  * @version 1.0 beta 4
+  * @version 1.0 beta 3
   * @license AGPL
   * @author entremonde / Spectral lab
   * @website http://lab.spectral.art
